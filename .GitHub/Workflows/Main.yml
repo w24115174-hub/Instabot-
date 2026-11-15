@@ -1,0 +1,94 @@
+name: bot
+
+on:
+  schedule:
+    - cron: "17 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install instagrapi==2.1.2
+
+      - run: python - <<'PY'
+        import json, pathlib, random, time
+        from instagrapi import Client
+        from instagrapi.exceptions import (
+            ChallengeRequired, ClientError, LoginRequired, PleaseWaitFewMinutes,
+        )
+
+        USUARIO  = "Wilfredo2012"
+        PASSWORD = "Wil2012"
+        OBJETIVO = "nasa"
+        LIMITE   = 50
+
+        S = pathlib.Path("data/session.json")
+        S.parent.mkdir(exist_ok=True)
+
+        cl = Client()
+        cl.delay_range = [1, 3]
+
+        if S.exists():
+            cl.set_settings(json.loads(S.read_text()))
+
+        try:
+            cl.get_timeline_feed()
+            print("sesion reutilizada, sin login")
+        except LoginRequired:
+            print("login nuevo")
+            try:
+                cl.login(USUARIO, PASSWORD)
+            except ChallengeRequired:
+                print("Instagram pide verificacion. Abre la app y confirma 'fui yo'.")
+                print("Luego vuelve a lanzar el workflow.")
+                raise SystemExit(1)
+            S.write_text(json.dumps(cl.get_settings()))
+            print("sesion guardada")
+
+        ya_sigo = {u.username for u in cl.user_following(cl.user_id, amount=0).values()}
+        print(f"ya sigues a {len(ya_sigo)} cuentas")
+
+        user_id = cl.user_id_from_username(OBJETIVO)
+
+        n = 0
+        for user in cl.user_followers(user_id, amount=LIMITE * 5).values():
+            if n >= LIMITE:
+                break
+            if user.username in ya_sigo:
+                continue
+            if user.is_private or not user.profile_pic_url:
+                continue
+            try:
+                cl.user_follow(user.pk)
+            except PleaseWaitFewMinutes:
+                print("rate limit, cortando")
+                break
+            except ClientError as e:
+                print(f"fallo @{user.username}: {e}")
+                continue
+            n += 1
+            print(f"seguido @{user.username} ({n}/{LIMITE})")
+            time.sleep(random.randint(20, 60))
+
+        print(f"FIN: {n} follows nuevos")
+        PY
+
+      - name: Guardar sesión
+        if: always()
+        run: |
+          git config user.name  bot
+          git config user.email bot@users.noreply.github.com
+          git add data/ || true
+          git diff --cached --quiet || git commit -m "sesion"
+          git push || true
